@@ -175,9 +175,9 @@ class LookUpTable:
 
     def path(self, unique_id: str):
         p = self.path_mapping.get(unique_id)
-        limit = 28
-        if p is not None and len(p) >= limit:
-            return f"..{p[len(p) - limit:]}"
+        # limit = 28
+        # if p is not None and len(p) >= limit:
+        #     return f"..{p[len(p) - limit:]}"
         return p
 
     def tests(self, unique_id: str):
