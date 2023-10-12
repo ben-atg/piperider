@@ -175,9 +175,9 @@ class LookUpTable:
 
     def path(self, unique_id: str):
         p = self.path_mapping.get(unique_id)
-        limit = 28
-        if p is not None and len(p) >= limit:
-            return f"..{p[len(p) - limit:]}"
+        # limit = 28
+        # if p is not None and len(p) >= limit:
+        #     return f"..{p[len(p) - limit:]}"
         return p
 
     def tests(self, unique_id: str):
@@ -553,7 +553,7 @@ class SummaryChangeSet(DefaultChangeSetOpMixin):
 
         out_func("")
 
-        self.generate_impact_summary_section(out_func)
+        # self.generate_impact_summary_section(out_func)
         self.generate_resource_impact_section(out_func)
 
         return output.getvalue()
@@ -586,9 +586,9 @@ class SummaryChangeSet(DefaultChangeSetOpMixin):
         out(mt.build())
 
     def generate_resource_impact_section(self, out: Callable[[str], None]) -> None:
-        out("# Resource Impact")
+        # out("# Resource Impact")
         self.generate_models_section(out)
-        self.generate_metrics_section(out)
+        # self.generate_metrics_section(out)
 
     def generate_models_section(self, out: Callable[[str], None]) -> None:
         out("### Models")
@@ -605,8 +605,7 @@ class SummaryChangeSet(DefaultChangeSetOpMixin):
         """.strip()
 
         mt = MarkdownTable(
-            headers=['&nbsp;&nbsp;&nbsp;', 'Model', 'Impact', column_header, 'Rows', 'Dbt Time', 'Failed Tests',
-                     'All Tests'])
+            headers=['&nbsp;&nbsp;&nbsp;', 'Model'])
 
         def impact(c: ChangeUnit):
             impacted = self.models.diffs
@@ -742,9 +741,7 @@ class SummaryChangeSet(DefaultChangeSetOpMixin):
         for c in changeset[:50]:
             mt.add_row(
                 [c.change_type.icon_image_tag,
-                 embed_url(self.mapper.path(c.unique_id), self.get_url(), c.unique_id, c.resource_type.value),
-                 impact(c), cols(c), rows(c), dbt_time(c), failed_tests(c),
-                 all_tests(c)])
+                 embed_url(self.mapper.path(c.unique_id), self.get_url(), c.unique_id, c.resource_type.value)])
 
         if len(changeset) > 50:
             remainings = len(changeset) - 50

@@ -268,9 +268,9 @@ class ComparisonData(object):
             f"skipped={len(potentially_impacted) - len(impacted) - len(assessed_no_impacted)}",
             f"impacted={len(impacted)}",
         ]
-
-        console.print("  Code Changes: " + ", ".join(code_change))
-        console.print("  Resource Impact: " + ", ".join(impact_summary))
+        #
+        # console.print("  Code Changes: " + ", ".join(code_change))
+        # console.print("  Resource Impact: " + ", ".join(impact_summary))
 
         console.print("")
 
