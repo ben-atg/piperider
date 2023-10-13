@@ -16,7 +16,7 @@ class MarkdownTable:
 
     def build(self):
         header_lines = "| " + " | ".join(self.headers).strip()
-        header_ending = "| " + " | ".join(["--" for x in self.headers]).strip()
+        header_ending = "| :--: |" + " | ".join(["--" for x in self.headers[1:]]).strip()
         row_lines = []
 
         for r in self.rows:
