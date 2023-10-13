@@ -591,13 +591,13 @@ class SummaryChangeSet(DefaultChangeSetOpMixin):
         # self.generate_metrics_section(out)
 
     def generate_models_section(self, out: Callable[[str], None]) -> None:
-        out("### Models")
+        out("### Models Impacted by Upstream Changes")
         m = self.models
         modified_with_downstream = [x for x in m.modified_with_downstream if x.resource_type == ResourceType.MODEL]
         removed = [x for x in m.explicit_changeset if x.change_type == ChangeType.REMOVED]
         changeset = self.mapper.sort(modified_with_downstream + removed)
         if not changeset:
-            out("No changes detected")
+            out("No model changes detected")
             return
 
         column_header = """
@@ -605,7 +605,7 @@ class SummaryChangeSet(DefaultChangeSetOpMixin):
         """.strip()
 
         mt = MarkdownTable(
-            headers=['&nbsp;&nbsp;&nbsp;', 'Model'])
+            headers=['Modified', 'Model'])
 
         def impact(c: ChangeUnit):
             impacted = self.models.diffs
