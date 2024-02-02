@@ -8,12 +8,12 @@ from typing import Any, Dict, List
 import jsonschema
 from jsonschema.exceptions import ValidationError
 from rich.console import Console
-from ruamel import yaml
-from ruamel.yaml import CommentedSeq
 
 import piperider_cli.dbtutil as dbtutil
 from piperider_cli import get_run_json_path, load_jinja_template, load_json
+from piperider_cli import yaml as pyml
 from piperider_cli.configuration import Configuration, FileSystem
+from piperider_cli.dbt import dbt_version
 from piperider_cli.error import RecipeConfigException
 from piperider_cli.event import CompareEventPayload
 from piperider_cli.recipes.utils import InteractiveStopException
@@ -43,7 +43,7 @@ class AbstractRecipeField(metaclass=ABCMeta):
 
         if content.get('command'):
             data = content.get('command')
-            if isinstance(data, CommentedSeq):
+            if isinstance(data, pyml.CommentedSeq):
                 for c in data:
                     self.commands.append(c)
             else:
@@ -180,7 +180,7 @@ class RecipeConfiguration:
     def dump(self):
         payload = self.__dict__()
         RecipeConfiguration.validate(payload)
-        return yaml.round_trip_dump(payload)
+        return pyml.round_trip_dump(payload)
 
     @staticmethod
     def validate(content: dict = None):
@@ -191,9 +191,8 @@ class RecipeConfiguration:
     def load(cls, path: str) -> 'RecipeConfiguration':
         template = load_jinja_template(path)
         try:
-            yml = yaml.YAML()
-            yml.allow_duplicate_keys = True
-            content = yml.load(template.render())
+            loader = pyml.allow_duplicate_keys_loader()
+            content = loader(template.render())
         except Exception:
             raise
 
@@ -274,6 +273,14 @@ def replace_commands_dbt_state_path(commands: List[str], dbt_state_path: str):
     return [command.replace('<DBT_STATE_PATH>', dbt_state_path) for command in commands]
 
 
+def prepare_dbt_manifest(cfg: RecipeConfiguration, options: Dict, recipe_type: str = 'base'):
+    if options.get('skip_datasource_connection') and dbt_version >= '1.5':
+        # dbt parse will write or return a manifest from 1.5
+        execute_dbt_parse_archive(cfg, recipe_type=recipe_type)
+    else:
+        execute_dbt_compile_archive(cfg, recipe_type=recipe_type)
+
+
 def prepare_dbt_resources_candidate(cfg: RecipeConfiguration, options: Dict):
     config = Configuration.instance()
     state = None
@@ -282,17 +289,25 @@ def prepare_dbt_resources_candidate(cfg: RecipeConfiguration, options: Dict):
         select = update_select_with_cli_option(options)
 
     if require_base_state(cfg):
-        execute_dbt_compile_archive(cfg, recipe_type='base')
+        prepare_dbt_manifest(cfg, options, recipe_type='base')
         state = cfg.base.state_path
 
     if cfg.target.ref is not None:
-        execute_dbt_compile_archive(cfg, recipe_type='target')
+        prepare_dbt_manifest(cfg, options, recipe_type='target')
         target_path = 'state'
     else:
         execute_dbt_deps(cfg.target)
-        execute_dbt_compile(cfg.target)
-        dbt_project = dbtutil.load_dbt_project(config.dbt.get('projectDir'))
+        if options.get('skip_datasource_connection') and dbt_version >= '1.5':
+            execute_dbt_parse(cfg.target)
+        else:
+            execute_dbt_compile(cfg.target)
+        # if global dbt config exists, use global dbt else use the first datasource
+        dbt = config.dbt if config.dbt else config.dataSources[0].args.get('dbt')
+        dbt_project = dbtutil.load_dbt_project(dbt.get('projectDir'))
         target_path = dbt_project.get('target-path') if dbt_project.get('target-path') else 'target'
+
+    if not cfg.auto_generated:
+        return None, state
 
     if any('state:' in item for item in select):
         console.print(f"Run: \[dbt list] select option '{' '.join(select)}' with state")
@@ -351,12 +366,7 @@ def execute_recipe(cfg: RecipeConfiguration, recipe_type='base', debug=False, ev
         console.print()
 
 
-def execute_dbt_compile_archive(cfg: RecipeConfiguration, recipe_type='base'):
-    if recipe_type == 'target':
-        model = cfg.target
-    else:
-        model = cfg.base
-
+def calculate_git_ref(cfg: RecipeConfiguration, recipe_type='base'):
     if recipe_type == 'target':
         branch_or_commit = tool().git_rev_parse(cfg.target.ref)
     else:
@@ -364,7 +374,34 @@ def execute_dbt_compile_archive(cfg: RecipeConfiguration, recipe_type='base'):
         branch_or_commit = tool().git_merge_base(cfg.base.ref, diff_target) or cfg.base.ref
 
     if not branch_or_commit:
-        raise RecipeConfigException("Branch is not specified")
+        raise RecipeConfigException("Git reference is not specified")
+
+    return branch_or_commit
+
+
+def execute_dbt_parse_archive(cfg: RecipeConfiguration, recipe_type='base'):
+    branch_or_commit = calculate_git_ref(cfg, recipe_type)
+
+    if recipe_type == 'target':
+        model = cfg.target
+    else:
+        model = cfg.base
+
+    if model.tmp_dir_path is None:
+        model.tmp_dir_path = tool().git_archive(branch_or_commit)
+        model.state_path = Path(os.path.join(model.tmp_dir_path, 'state')).as_posix()
+
+    execute_dbt_deps(model, model.tmp_dir_path, Path(FileSystem.DBT_PROFILES_DIR).as_posix())
+    execute_dbt_parse(model, model.tmp_dir_path, Path(FileSystem.DBT_PROFILES_DIR).as_posix(), model.state_path)
+
+
+def execute_dbt_compile_archive(cfg: RecipeConfiguration, recipe_type='base'):
+    branch_or_commit = calculate_git_ref(cfg, recipe_type)
+
+    if recipe_type == 'target':
+        model = cfg.target
+    else:
+        model = cfg.base
 
     if model.tmp_dir_path is None:
         model.tmp_dir_path = tool().git_archive(branch_or_commit)
@@ -407,7 +444,25 @@ def execute_dbt_compile(model: RecipeModel, project_dir: str = None, profiles_di
     console.print()
 
 
-def execute_recipe_archive(cfg: RecipeConfiguration, recipe_type='base', debug=False, event_payload=CompareEventPayload()):
+def execute_dbt_parse(model: RecipeModel, project_dir: str = None, profiles_dir: str = None, target_path: str = None):
+    console.print("Run: \[dbt parse]")
+    cmd = 'dbt parse'
+    if project_dir:
+        cmd += f' --project-dir {project_dir}'
+    if target_path:
+        cmd += f' --target-path {target_path}'
+    if profiles_dir:
+        cmd += f' --profiles-dir {profiles_dir}'
+    exit_code = tool().execute_command_with_showing_output(cmd.strip(), model.dbt.envs())
+    if exit_code != 0:
+        console.print(
+            f"[bold yellow]Warning: [/bold yellow] Dbt command failed: '{cmd}' with exit code: {exit_code}")
+        sys.exit(exit_code)
+    console.print()
+
+
+def execute_recipe_archive(cfg: RecipeConfiguration, recipe_type='base', debug=False,
+                           event_payload=CompareEventPayload()):
     """
     We execute a recipe in the following steps:
     1. export the repo with specified commit or branch if needed
@@ -525,12 +580,14 @@ def execute_recipe_configuration(cfg: RecipeConfiguration, options, debug=False,
     try:
         console.rule("Recipe executor: prepare execution environments")
         dbt_resources, dbt_state_path = prepare_dbt_resources_candidate(cfg, options)
-        if debug:
-            console.print(f'Config: piperider env "PIPERIDER_DBT_RESOURCES" = {dbt_resources}')
-        else:
-            console.print('Config: piperider env "PIPERIDER_DBT_RESOURCES"')
-        cfg.base.piperider.environments['PIPERIDER_DBT_RESOURCES'] = '\n'.join(dbt_resources)
-        cfg.target.piperider.environments['PIPERIDER_DBT_RESOURCES'] = '\n'.join(dbt_resources)
+        if cfg.auto_generated:
+            if debug:
+                console.print(f'Config: piperider env "PIPERIDER_DBT_RESOURCES" = {dbt_resources}')
+            else:
+                console.print('Config: piperider env "PIPERIDER_DBT_RESOURCES"')
+
+            cfg.base.piperider.environments['PIPERIDER_DBT_RESOURCES'] = '\n'.join(dbt_resources)
+            cfg.target.piperider.environments['PIPERIDER_DBT_RESOURCES'] = '\n'.join(dbt_resources)
 
         if dbt_state_path:
             cfg.target.dbt.commands = replace_commands_dbt_state_path(cfg.target.dbt.commands, dbt_state_path)

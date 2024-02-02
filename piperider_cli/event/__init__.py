@@ -1,10 +1,11 @@
 import os
+import threading
 import uuid
 from typing import Union
 
 import sentry_sdk
 from rich.console import Console
-from ruamel import yaml
+from piperider_cli import yaml as pyml
 
 from piperider_cli import PIPERIDER_USER_HOME, PIPERIDER_USER_PROFILE, is_executed_manually
 from piperider_cli.event.collector import Collector
@@ -14,7 +15,7 @@ PIPERIDER_USER_EVENT_PATH = os.path.join(PIPERIDER_USER_HOME, '.unsend_events.js
 PIPERIDER_FLUSH_EVENTS_WHITELIST = ['init', 'run', 'generate-report', 'compare-reports', 'compare']
 
 _collector = Collector()
-_yml = yaml.YAML()
+user_profile_lock = threading.Lock()
 
 
 def init():
@@ -27,22 +28,24 @@ def init():
 
 
 def load_user_profile():
-    if not os.path.exists(PIPERIDER_USER_PROFILE):
-        user_profile = _generate_user_profile()
-    else:
-        with open(PIPERIDER_USER_PROFILE, 'r') as f:
-            user_profile = _yml.load(f)
-            if user_profile.get('user_id') is None:
-                user_profile = _generate_user_profile()
+    # can be called by multiple threads from capture_exception
+    with user_profile_lock:
+        if not os.path.exists(PIPERIDER_USER_PROFILE):
+            user_profile = _generate_user_profile()
+        else:
+            with open(PIPERIDER_USER_PROFILE, 'r') as f:
+                user_profile = pyml.load(f)
+                if user_profile.get('user_id') is None:
+                    user_profile = _generate_user_profile()
 
-    return user_profile
+        return user_profile
 
 
 def update_user_profile(update_values):
     original = load_user_profile()
     original.update(update_values)
     with open(PIPERIDER_USER_PROFILE, 'w+') as f:
-        _yml.dump(original, f)
+        pyml.dump(original, f)
     return original
 
 
@@ -51,7 +54,7 @@ def _get_api_key():
     config_file = os.path.abspath(os.path.join(os.path.dirname(data.__file__), 'CONFIG'))
     try:
         with open(config_file) as fh:
-            config = _yml.load(fh)
+            config = pyml.load(fh)
             return config.get('event_api_key')
     except Exception:
         return None
@@ -67,7 +70,7 @@ def _generate_user_profile():
 
     user_id = uuid.uuid4().hex
     with open(PIPERIDER_USER_PROFILE, 'w+') as f:
-        _yml.dump({'user_id': user_id, 'anonymous_tracking': True}, f)
+        pyml.dump({'user_id': user_id, 'anonymous_tracking': True}, f)
     return dict(user_id=user_id, anonymous_tracking=True)
 
 
@@ -102,7 +105,7 @@ def flush_events(command=None):
 
 def log_event(prop, event_type, **kwargs):
     with open(PIPERIDER_USER_PROFILE, 'r') as f:
-        user_profile = _yml.load(f)
+        user_profile = pyml.load(f)
     # TODO: default anonymous_tracking to false if field is not present
     tracking = user_profile.get('anonymous_tracking', False)
     tracking = tracking and isinstance(tracking, bool)

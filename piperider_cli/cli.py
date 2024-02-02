@@ -57,12 +57,21 @@ def dbt_select_option_builder():
 dbt_related_options = [
     click.option('--dbt-project-dir', type=click.Path(exists=True),
                  help='The path to the dbt project directory.'),
+    click.option('--dbt-target', type=click.STRING, default=None,
+                 help='Specify which dbt target to load for the given dbt profile.'),
     click.option('--dbt-profiles-dir', type=click.Path(exists=True), default=None,
                  help='Directory to search for dbt profiles.yml.'),
+    click.option('--dbt-profile', type=click.STRING, default=None,
+                 help='Specify which dbt profile to load. Overrides setting in dbt_project.yml.'),
     click.option('--no-auto-search', type=click.BOOL, default=False, is_flag=True,
                  help='Disable auto detection of dbt projects.'),
+
 ]
 
+# Quick Look (https://cloud.piperider.io/quick-look) is a public-facing page on PipeRider Cloud.
+# Every user can paste the GitHub repo or PR URL, and PipeRider Cloud will analyze that URL by the CLI on the air.
+# The reports on the Quick Look are default shared public with a limited time.
+# PipeRider Cloud uses this feature flag to upload those reports to the Quick Look storage.
 feature_flags = [
     click.option('--enable-quick-look-share', envvar='PIPERIDER_ENABLE_QUICK_LOOK_SHARE',
                  is_flag=True, default=False, hidden=True, help='Enable share to Quick Look.')
@@ -165,13 +174,18 @@ def init(**kwargs):
     no_auto_search = kwargs.get('no_auto_search')
     dbt_project_path = DbtUtil.get_dbt_project_path(dbt_project_dir, no_auto_search)
     dbt_profiles_dir = kwargs.get('dbt_profiles_dir')
+    dbt_profile = kwargs.get('dbt_profile')
+    dbt_target = kwargs.get('dbt_target')
     if dbt_project_path:
         FileSystem.set_working_directory(dbt_project_path)
 
     # TODO show the process and message to users
     console.print(f'Initialize piperider to path {FileSystem.PIPERIDER_WORKSPACE_PATH}')
 
-    config = Initializer.exec(dbt_project_path=dbt_project_path, dbt_profiles_dir=dbt_profiles_dir)
+    config = Initializer.exec(dbt_project_path=dbt_project_path, dbt_profiles_dir=dbt_profiles_dir,
+                              dbt_profile=dbt_profile,
+                              dbt_target=dbt_target,
+                              reload=False)
     if kwargs.get('debug'):
         for ds in config.dataSources:
             console.rule('Configuration')
@@ -180,14 +194,14 @@ def init(**kwargs):
         sys.exit(1)
 
     # Show the content of config.yml
-    Initializer.show_config()
+    Initializer.show_config_file()
 
 
 @cli.command(short_help='Check the configuraion and connection.', cls=TrackCommand)
 @add_options(dbt_related_options)
 @add_options(debug_option)
 def diagnose(**kwargs):
-    'Check project configuration, datasource, connections, and assertion configuration.'
+    'Check project configuration, datasource, and connections configuration.'
 
     console = Console()
 
@@ -196,10 +210,13 @@ def diagnose(**kwargs):
     no_auto_search = kwargs.get('no_auto_search')
     dbt_project_path = DbtUtil.get_dbt_project_path(dbt_project_dir, no_auto_search)
     dbt_profiles_dir = kwargs.get('dbt_profiles_dir')
+    dbt_profile = kwargs.get('dbt_profile')
+    dbt_target = kwargs.get('dbt_target')
     if dbt_project_path:
         FileSystem.set_working_directory(dbt_project_path)
         # Only run initializer when dbt project path is provided
-        Initializer.exec(dbt_project_path=dbt_project_path, dbt_profiles_dir=dbt_profiles_dir, interactive=False)
+        Initializer.exec(dbt_project_path=dbt_project_path, dbt_profiles_dir=dbt_profiles_dir, interactive=False,
+                         dbt_profile=dbt_profile, dbt_target=dbt_target)
     elif is_piperider_workspace_exist() is False:
         raise DbtProjectNotFoundError()
 
@@ -208,7 +225,7 @@ def diagnose(**kwargs):
     console.print(f'[bold dark_orange]PipeRider Version:[/bold dark_orange] {__version__}')
 
     from piperider_cli.validator import Validator
-    if not Validator.diagnose():
+    if not Validator.diagnose(dbt_profile=dbt_profile, dbt_target=dbt_target):
         sys.exit(1)
 
 
@@ -239,31 +256,11 @@ def diagnose(**kwargs):
 @add_options(debug_option)
 def run(**kwargs):
     """
-    Profile data source, run assertions, and generate report(s). By default, the raw results and reports are saved in ".piperider/outputs".
+    Profile data source and generate report(s). By default, the raw results and reports are saved in ".piperider/outputs".
     """
 
     from piperider_cli.cli_utils.run_cmd import run as cmd
     return cmd(**kwargs)
-
-
-@cli.command(short_help='Generate recommended assertions. - Deprecated', cls=TrackCommand)
-@click.option('--input', default=None, type=click.Path(exists=True), help='Specify the raw result file.')
-@click.option('--no-recommend', is_flag=True, help='Generate assertions templates only.')
-@click.option('--report-dir', default=None, type=click.STRING, help='Use a different report directory.')
-@click.option('--table', default=None, type=click.STRING, help='Generate assertions for the given table')
-@add_options(debug_option)
-def generate_assertions(**kwargs):
-    'Generate recommended assertions based on the latest result. By default, the profiling result will be loaded from ".piperider/outputs".'
-    input_path = kwargs.get('input')
-    report_dir = kwargs.get('report_dir')
-    no_recommend = kwargs.get('no_recommend')
-    table = kwargs.get('table')
-
-    from piperider_cli.assertion_generator import AssertionGenerator
-    ret = AssertionGenerator.exec(input_path=input_path, report_dir=report_dir, no_recommend=no_recommend, table=table)
-    if ret != 0:
-        sys.exit(ret)
-    return ret
 
 
 @cli.command(short_help='Generate a report.', cls=TrackCommand)

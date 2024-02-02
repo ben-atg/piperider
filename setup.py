@@ -32,7 +32,7 @@ setup(name='piperider',
       python_requires=">=3.8",
       packages=find_packages(),
       install_requires=[
-          'ruamel.yaml',
+          'ruamel.yaml<0.18.0',
           'sqlalchemy>=1.4',
           'sentry-sdk',
           'rich>=12.0.0',
@@ -45,7 +45,7 @@ setup(name='piperider',
           'requests>=2.28.1',
           'requests_toolbelt>=0.9.1',
           'deepmerge',
-          'dbt-core>=1.3,<1.7'
+          'dbt-core>=1.3'
       ],
       tests_require=['pytest'],
       extras_require={
@@ -76,6 +76,7 @@ setup(name='piperider',
           'csv': duckdb_require_packages,
           'parquet': duckdb_require_packages,
           'dev': [
+              'tox',
               'pytest>=4.6',
               'pytest-flake8',
               'flake8==3.9.2',
