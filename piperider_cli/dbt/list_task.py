@@ -34,7 +34,7 @@ def load_full_manifest(target_path: str, project_dir: str = None):
     register_adapter(runtime_config)
 
     v = dbt_version
-    if v == '1.5' or v == '1.6':
+    if v == '1.5' or v == '1.6' or v == '1.7':
         return ManifestLoader.get_full_manifest(
             runtime_config, write_perf_info=False
         )
@@ -56,7 +56,7 @@ def load_manifest(manifest: Dict):
     if v == '1.5':
         return _load_manifest_version_15(manifest)
 
-    if v == '1.6':
+    if v == '1.6' or v == '1.7':
         return _load_manifest_version_16(manifest)
 
     raise NotImplementedError(f'dbt-core version: {v} is not supported')
@@ -114,12 +114,7 @@ def _load_manifest_version_15(manifest: Dict):
             return int(match.group(1))
         raise ValueError("Manifest doesn't have schema version")
 
-    import dbt.contracts.graph.manifest
-    origin_function = dbt.contracts.graph.manifest.get_manifest_schema_version
-    dbt.contracts.graph.manifest.get_manifest_schema_version = patched_get_manifest_schema_version
-
     result = WritableManifest.upgrade_schema_version(data)
-    dbt.contracts.graph.manifest.get_manifest_schema_version = origin_function
     return result
 
 
@@ -265,7 +260,7 @@ def PrepareRuntimeConfig(target_path: str, project_dir: str = None):
     setattr(flags, "target", None)
 
     v = dbt_version
-    if v == '1.5' or v == '1.6':
+    if v == '1.5' or v == '1.6' or v == '1.7':
         return _get_v15_runtime_config(flags)
     elif v == '1.4':
         return _get_v14_runtime_config(flags)
@@ -350,17 +345,24 @@ class _RuntimeConfig(RuntimeConfig):
             "dependencies": None,
         }
 
-        if dbt_version >= '1.6.2':
-            # Since dbt-core v1.6.2 'dbt_cloud' is required in RuntimeConfig
+        def has_field(field_name):
+            return field_name in {f.name for f in fields(RuntimeConfig)}
+
+        if has_field('dbt_cloud'):
             data['dbt_cloud'] = None
 
-        found_restrict_access = any(field.name == 'restrict_access' for field in fields(RuntimeConfig))
-        found_packages_specified_path = any(field.name == 'packages_specified_path' for field in fields(RuntimeConfig))
-        if found_restrict_access:
+        if has_field('restrict_access'):
             data['restrict_access'] = False
 
-        if found_packages_specified_path:
+        if has_field('packages_specified_path'):
             data['packages_specified_path'] = "packages.yml"
+
+        # dbt 1.7
+        if has_field('semantic_models'):
+            data['semantic_models'] = {}
+
+        if has_field('saved_queries'):
+            data['saved_queries'] = {}
 
         super().__init__(args=None, **data)
 

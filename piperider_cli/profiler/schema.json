@@ -384,10 +384,20 @@
           "type": "string"
         },
         "git_branch": {
-          "type": "string"
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "git_sha": {
           "type": "string"
+        },
+        "skip_datasource": {
+          "type": "boolean"
         }
       }
     },

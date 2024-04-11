@@ -1,10 +1,10 @@
+import io
+import platform
 from abc import ABCMeta, abstractmethod
-from typing import List
 
-from rich.console import Console
+from rich.console import Console, _STD_STREAMS
 from rich.markup import escape
 
-from piperider_cli.assertion_engine import AssertionEngine, ValidationResult
 from piperider_cli.cloud import PipeRiderCloud
 from piperider_cli.configuration import Configuration, FileSystem
 from piperider_cli.error import PipeRiderError
@@ -25,10 +25,30 @@ class AbstractChecker(metaclass=ABCMeta):
 
 
 class CheckingHandler(object):
-    def __init__(self):
+    def __init__(self, dbt_profile=None, dbt_target=None):
         self.configurator = None
         self.checker_chain = []
         self.console = Console()
+        self.dbt = {
+            'profile': dbt_profile,
+            'target': dbt_target
+        }
+
+    def _escape_console_msg(self, msg: str) -> str:
+        # escape unsupported unicode emojis for legacy windows console (ref: rich/console.py)
+        use_legacy_windows_render = False
+        if platform.system() == "Windows" and self.console.legacy_windows:
+            try:
+                use_legacy_windows_render = (
+                    self.console.file.fileno() in _STD_STREAMS
+                )
+            except (ValueError, io.UnsupportedOperation):
+                pass
+
+        if use_legacy_windows_render:
+            return msg.encode(encoding='cp1252', errors='ignore').decode(encoding='cp1252')
+
+        return msg
 
     def set_checker(self, name: str, checker: AbstractChecker):
         self.checker_chain.append({'name': name, 'cls': checker()})
@@ -36,7 +56,8 @@ class CheckingHandler(object):
     def execute(self):
         if not self.configurator:
             try:
-                self.configurator = Configuration.instance()
+                self.configurator = Configuration.instance(dbt_profile=self.dbt.get('profile'),
+                                                           dbt_target=self.dbt.get('target'))
                 self.configurator.activate_report_directory()
             except Exception:
                 pass
@@ -50,14 +71,14 @@ class CheckingHandler(object):
                     error_msg = ', '.join(str(e) for e in error_msg)
                 elif isinstance(error_msg, PipeRiderError):
                     hint = error_msg.hint
-                self.console.print(CONSOLE_MSG_FAIL)
+                self.console.print(self._escape_console_msg(CONSOLE_MSG_FAIL))
                 self.console.print(f"[bold red]Error:[/bold red] {checker['cls'].__class__.__name__}: {error_msg}")
                 if hint:
                     self.console.print(f'[bold yellow]Hint[/bold yellow]:\n  {escape(hint)}')
                 return False
-            self.console.print(CONSOLE_MSG_PASS)
+            self.console.print(self._escape_console_msg(CONSOLE_MSG_PASS))
 
-        self.console.print(CONSOLE_MSG_ALL_SET)
+        self.console.print(self._escape_console_msg(CONSOLE_MSG_ALL_SET))
         return True
 
 
@@ -129,36 +150,6 @@ class CheckConnections(AbstractChecker):
         return all_passed, reason
 
 
-class CheckAssertionFiles(AbstractChecker):
-    def check_function(self, configurator: Configuration) -> (bool, str):
-        engine = AssertionEngine(None)
-        passed_files, failed_files = engine.load_all_assertions_for_validation()
-        results: List[ValidationResult] = engine.validate_assertions()
-
-        for file in passed_files:
-            self.console.print(f'  {file}: [[bold green]OK[/bold green]]')
-
-        for file in failed_files:
-            self.console.print(f'  {file}: [[bold red]FAILED[/bold red]]')
-
-        newline_section = False
-        validate_fail = False
-        error_msg = ''
-        for result in results:
-            if result.has_errors():
-                if not newline_section:
-                    self.console.line()
-                    newline_section = True
-                self.console.print(f'  [[bold red]FAILED[/bold red]] {result.as_user_report()}')
-                validate_fail = True
-
-        if validate_fail or len(failed_files):
-            error_msg = 'Syntax problem of PipeRider assertion yaml files'
-            self.console.line()
-
-        return error_msg == '', error_msg
-
-
 class CloudAccountChecker(AbstractChecker):
     def check_function(self, configurator: Configuration) -> (bool, str):
         if not piperider_cloud.available:
@@ -177,12 +168,11 @@ class CloudAccountChecker(AbstractChecker):
 
 class Validator():
     @staticmethod
-    def diagnose():
-        handler = CheckingHandler()
+    def diagnose(dbt_profile: str = None, dbt_target: str = None):
+        handler = CheckingHandler(dbt_profile=dbt_profile, dbt_target=dbt_target)
         handler.set_checker('config files', CheckConfiguration)
         handler.set_checker('format of data sources', CheckDataSources)
         handler.set_checker('connections', CheckConnections)
-        handler.set_checker('assertion files', CheckAssertionFiles)
         if piperider_cloud.has_configured():
             handler.set_checker('cloud account', CloudAccountChecker)
         return handler.execute()

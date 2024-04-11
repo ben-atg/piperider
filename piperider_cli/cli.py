@@ -9,7 +9,7 @@ from click import Context, Parameter
 from rich.console import Console
 
 from piperider_cli import __version__, event, sentry_dns, sentry_env
-from piperider_cli.cli_utils import DbtUtil
+from piperider_cli.cli_utils import DbtUtil, verify_upload_related_options
 from piperider_cli.cli_utils.cloud import CloudConnectorHelper
 from piperider_cli.configuration import FileSystem, is_piperider_workspace_exist
 from piperider_cli.error import DbtProjectNotFoundError
@@ -57,10 +57,24 @@ def dbt_select_option_builder():
 dbt_related_options = [
     click.option('--dbt-project-dir', type=click.Path(exists=True),
                  help='The path to the dbt project directory.'),
+    click.option('--dbt-target', type=click.STRING, default=None,
+                 help='Specify which dbt target to load for the given dbt profile.'),
     click.option('--dbt-profiles-dir', type=click.Path(exists=True), default=None,
                  help='Directory to search for dbt profiles.yml.'),
+    click.option('--dbt-profile', type=click.STRING, default=None,
+                 help='Specify which dbt profile to load. Overrides setting in dbt_project.yml.'),
     click.option('--no-auto-search', type=click.BOOL, default=False, is_flag=True,
                  help='Disable auto detection of dbt projects.'),
+
+]
+
+# Quick Look (https://cloud.piperider.io/quick-look) is a public-facing page on PipeRider Cloud.
+# Every user can paste the GitHub repo or PR URL, and PipeRider Cloud will analyze that URL by the CLI on the air.
+# The reports on the Quick Look are default shared public with a limited time.
+# PipeRider Cloud uses this feature flag to upload those reports to the Quick Look storage.
+feature_flags = [
+    click.option('--enable-quick-look-share', envvar='PIPERIDER_ENABLE_QUICK_LOOK_SHARE',
+                 is_flag=True, default=False, hidden=True, help='Enable share to Quick Look.')
 ]
 
 
@@ -78,7 +92,7 @@ class RunDataPath(click.Path):
         super().__init__(exists=True, dir_okay=False, resolve_path=True)
 
     def convert(
-            self, value: t.Any, param: t.Optional["Parameter"], ctx: t.Optional["Context"]
+        self, value: t.Any, param: t.Optional["Parameter"], ctx: t.Optional["Context"]
     ) -> t.Any:
         rv = value
 
@@ -160,13 +174,18 @@ def init(**kwargs):
     no_auto_search = kwargs.get('no_auto_search')
     dbt_project_path = DbtUtil.get_dbt_project_path(dbt_project_dir, no_auto_search)
     dbt_profiles_dir = kwargs.get('dbt_profiles_dir')
+    dbt_profile = kwargs.get('dbt_profile')
+    dbt_target = kwargs.get('dbt_target')
     if dbt_project_path:
         FileSystem.set_working_directory(dbt_project_path)
 
     # TODO show the process and message to users
     console.print(f'Initialize piperider to path {FileSystem.PIPERIDER_WORKSPACE_PATH}')
 
-    config = Initializer.exec(dbt_project_path=dbt_project_path, dbt_profiles_dir=dbt_profiles_dir)
+    config = Initializer.exec(dbt_project_path=dbt_project_path, dbt_profiles_dir=dbt_profiles_dir,
+                              dbt_profile=dbt_profile,
+                              dbt_target=dbt_target,
+                              reload=False)
     if kwargs.get('debug'):
         for ds in config.dataSources:
             console.rule('Configuration')
@@ -175,14 +194,14 @@ def init(**kwargs):
         sys.exit(1)
 
     # Show the content of config.yml
-    Initializer.show_config()
+    Initializer.show_config_file()
 
 
 @cli.command(short_help='Check the configuraion and connection.', cls=TrackCommand)
 @add_options(dbt_related_options)
 @add_options(debug_option)
 def diagnose(**kwargs):
-    'Check project configuration, datasource, connections, and assertion configuration.'
+    'Check project configuration, datasource, and connections configuration.'
 
     console = Console()
 
@@ -191,10 +210,13 @@ def diagnose(**kwargs):
     no_auto_search = kwargs.get('no_auto_search')
     dbt_project_path = DbtUtil.get_dbt_project_path(dbt_project_dir, no_auto_search)
     dbt_profiles_dir = kwargs.get('dbt_profiles_dir')
+    dbt_profile = kwargs.get('dbt_profile')
+    dbt_target = kwargs.get('dbt_target')
     if dbt_project_path:
         FileSystem.set_working_directory(dbt_project_path)
         # Only run initializer when dbt project path is provided
-        Initializer.exec(dbt_project_path=dbt_project_path, dbt_profiles_dir=dbt_profiles_dir, interactive=False)
+        Initializer.exec(dbt_project_path=dbt_project_path, dbt_profiles_dir=dbt_profiles_dir, interactive=False,
+                         dbt_profile=dbt_profile, dbt_target=dbt_target)
     elif is_piperider_workspace_exist() is False:
         raise DbtProjectNotFoundError()
 
@@ -203,7 +225,7 @@ def diagnose(**kwargs):
     console.print(f'[bold dark_orange]PipeRider Version:[/bold dark_orange] {__version__}')
 
     from piperider_cli.validator import Validator
-    if not Validator.diagnose():
+    if not Validator.diagnose(dbt_profile=dbt_profile, dbt_target=dbt_target):
         sys.exit(1)
 
 
@@ -230,34 +252,15 @@ def diagnose(**kwargs):
                  help='If set, use the given directory as the source for JSON files to compare with this project.')
 ])
 @add_options(dbt_related_options)
+@add_options(feature_flags)
 @add_options(debug_option)
 def run(**kwargs):
     """
-    Profile data source, run assertions, and generate report(s). By default, the raw results and reports are saved in ".piperider/outputs".
+    Profile data source and generate report(s). By default, the raw results and reports are saved in ".piperider/outputs".
     """
 
     from piperider_cli.cli_utils.run_cmd import run as cmd
     return cmd(**kwargs)
-
-
-@cli.command(short_help='Generate recommended assertions. - Deprecated', cls=TrackCommand)
-@click.option('--input', default=None, type=click.Path(exists=True), help='Specify the raw result file.')
-@click.option('--no-recommend', is_flag=True, help='Generate assertions templates only.')
-@click.option('--report-dir', default=None, type=click.STRING, help='Use a different report directory.')
-@click.option('--table', default=None, type=click.STRING, help='Generate assertions for the given table')
-@add_options(debug_option)
-def generate_assertions(**kwargs):
-    'Generate recommended assertions based on the latest result. By default, the profiling result will be loaded from ".piperider/outputs".'
-    input_path = kwargs.get('input')
-    report_dir = kwargs.get('report_dir')
-    no_recommend = kwargs.get('no_recommend')
-    table = kwargs.get('table')
-
-    from piperider_cli.assertion_generator import AssertionGenerator
-    ret = AssertionGenerator.exec(input_path=input_path, report_dir=report_dir, no_recommend=no_recommend, table=table)
-    if ret != 0:
-        sys.exit(ret)
-    return ret
 
 
 @cli.command(short_help='Generate a report.', cls=TrackCommand)
@@ -287,6 +290,7 @@ def generate_report(**kwargs):
               help='Specify the project name to upload.')
 @click.option('--share', default=False, is_flag=True, help='Enable public share of the report to PipeRider Cloud.')
 @click.option('--open', is_flag=True, help='Opens the generated report in the system\'s default browser')
+@add_options(feature_flags)
 @add_options(debug_option)
 def compare_reports(**kwargs):
     'Compare two existing reports selected in interactive mode or by option.'
@@ -298,22 +302,14 @@ def compare_reports(**kwargs):
     tables_from = kwargs.get('tables_from')
     summary_file = kwargs.get('summary_file')
     open_report = kwargs.get('open')
-    force_upload = kwargs.get('upload')
-    enable_share = kwargs.get('share')
     project_name = kwargs.get('project')
 
-    if enable_share or CloudConnectorHelper.is_auto_upload():
-        force_upload = True
-
-    if force_upload and not CloudConnectorHelper.is_login():
-        force_upload = False
-        console = Console()
-        console.print('[bold yellow]Warning: [/bold yellow]Reports will not be uploaded due to not logged in.')
+    enable_upload, enable_share = verify_upload_related_options(**kwargs)
 
     from piperider_cli.compare_report import CompareReport
     CompareReport.exec(a=a, b=b, last=last, datasource=datasource,
                        report_dir=kwargs.get('report_dir'), output=kwargs.get('output'), summary_file=summary_file,
-                       tables_from=tables_from, force_upload=force_upload, enable_share=enable_share,
+                       tables_from=tables_from, force_upload=enable_upload, enable_share=enable_share,
                        open_report=open_report, project_name=project_name, debug=kwargs.get('debug', False),
                        show_progress=True)
 
@@ -450,6 +446,7 @@ def cloud_compare_reports(**kwargs):
                  show_default=True),
 ])
 @add_options(dbt_related_options)
+@add_options(feature_flags)
 @add_options(debug_option)
 def compare_with_recipe(ref, **kwargs):
     """

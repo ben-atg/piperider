@@ -7,7 +7,9 @@ from rich.prompt import Prompt
 from rich.syntax import Syntax
 from rich.table import Table
 
-from piperider_cli import clone_directory, safe_load_yaml
+from piperider_cli import clone_directory
+from piperider_cli.yaml import safe_load_yaml
+
 from piperider_cli.configuration import Configuration, FileSystem
 from piperider_cli.datasource import DataSource, FANCY_USER_INPUT
 from piperider_cli.datasource.survey import UserSurveyMockDataSource
@@ -72,14 +74,16 @@ def _ask_user_input_datasource(config: Configuration = None):
     return config
 
 
-def _inherit_datasource_from_dbt_project(dbt_project_path, dbt_profiles_dir=None, interactive=True):
+def _inherit_datasource_from_dbt_project(dbt_project_path, dbt_profiles_dir=None, dbt_profile: str = None,
+                                         dbt_target: str = None, interactive=True):
     config = safe_load_yaml(FileSystem.PIPERIDER_CONFIG_PATH)
     if config and config.get('dataSources'):
         if interactive is True:
             console.print('[[bold yellow]Warning[/bold yellow]] Found existing configuration. Skip initialization.')
         return config
 
-    dbt_config = Configuration.from_dbt_project(dbt_project_path, dbt_profiles_dir)
+    dbt_config = Configuration.from_dbt_project(dbt_project_path, dbt_profiles_dir, dbt_profile=dbt_profile,
+                                                dbt_target=dbt_target)
     _generate_piperider_workspace()
     dbt_config.dump(FileSystem.PIPERIDER_CONFIG_PATH)
 
@@ -88,7 +92,8 @@ def _inherit_datasource_from_dbt_project(dbt_project_path, dbt_profiles_dir=None
     return dbt_config
 
 
-def _generate_configuration(dbt_project_path=None, dbt_profiles_dir=None, interactive=True):
+def _generate_configuration(dbt_project_path=None, dbt_profiles_dir=None, dbt_profile: str = None,
+                            dbt_target: str = None, interactive=True, ):
     """
     :param dbt_project_path:
     :return: Configuration object
@@ -105,7 +110,8 @@ def _generate_configuration(dbt_project_path=None, dbt_profiles_dir=None, intera
         # TODO: mark as deprecated in the future
         console.rule('Deprecated', style='bold red')
         console.print(
-            'Non-dbt project is deprecated and will be removed in the future. If you have a strong need for non-dbt project, please contact us by "piperider feedback".\n')
+            'Non-dbt project is deprecated and will be removed in the future. If you have a strong need for non-dbt '
+            'project, please contact us by "piperider feedback".\n')
         return _ask_user_input_datasource(config=config)
 
     if config is not None:
@@ -113,12 +119,15 @@ def _generate_configuration(dbt_project_path=None, dbt_profiles_dir=None, intera
             console.print('[[bold yellow]Warning[/bold yellow]] Found existing configuration. Skip initialization.')
         return config
 
-    return _inherit_datasource_from_dbt_project(dbt_project_path, dbt_profiles_dir, interactive)
+    return _inherit_datasource_from_dbt_project(dbt_project_path, dbt_profiles_dir, interactive=interactive,
+                                                dbt_profile=dbt_profile,
+                                                dbt_target=dbt_target)
 
 
-class Initializer():
+class Initializer:
     @staticmethod
-    def exec(working_dir=None, dbt_project_path=None, dbt_profiles_dir=None, interactive=True):
+    def exec(working_dir=None, dbt_project_path=None, dbt_profiles_dir=None, dbt_profile: str = None,
+             dbt_target: str = None, interactive=True, reload: bool = True):
         if working_dir is None:
             working_dir = FileSystem.PIPERIDER_WORKSPACE_PATH
 
@@ -126,14 +135,15 @@ class Initializer():
             console.print('[bold green]Piperider workspace already exist[/bold green] ')
 
         # get Configuration object from dbt or user created configuration
-        _generate_configuration(dbt_project_path, dbt_profiles_dir, interactive)
-        configuration = Configuration.instance()
+        _generate_configuration(dbt_project_path, dbt_profiles_dir, interactive=interactive, dbt_profile=dbt_profile,
+                                dbt_target=dbt_target)
+        configuration = Configuration.instance(dbt_profile=dbt_profile, dbt_target=dbt_target, reload=reload)
         configuration.activate_report_directory()
 
         return configuration
 
     @staticmethod
-    def show_config():
+    def show_config_file():
 
         # show config.yml
         with open(FileSystem.PIPERIDER_CONFIG_PATH, 'r') as f:

@@ -1,3 +1,4 @@
+import copy
 import json
 import os
 import shlex
@@ -11,10 +12,9 @@ from typing import Callable, Dict, List, Optional, Union
 
 import inquirer
 from rich.console import Console
-from ruamel import yaml
-from ruamel.yaml import CommentedMap, CommentedSeq
 
-from piperider_cli import raise_exception_when_directory_not_writable, round_trip_load_yaml, safe_load_yaml
+from piperider_cli import raise_exception_when_directory_not_writable
+from piperider_cli.yaml import round_trip_load_yaml, safe_load_yaml
 from piperider_cli.cli_utils import DbtUtil
 from piperider_cli.datasource import DATASOURCE_PROVIDERS, DataSource
 from piperider_cli.datasource.unsupported import UnsupportedDataSource
@@ -24,6 +24,7 @@ from piperider_cli.error import \
     PipeRiderInvalidDataSourceError, \
     DbtProjectNotFoundError, \
     DbtProfileNotFoundError
+from piperider_cli import yaml as pyml
 
 # ref: https://docs.getdbt.com/dbt-cli/configure-your-profile
 DBT_PROFILES_DIR_DEFAULT = '~/.dbt/'
@@ -367,20 +368,20 @@ class Configuration(object):
 
     @staticmethod
     def update_config(key: str, update_values: Union[dict, str]):
-        _yml = yaml.YAML()
-
         with open(FileSystem.PIPERIDER_CONFIG_PATH, 'r') as f:
-            config = _yml.load(f) or {}
+            config = pyml.load(f) or {}
 
         config[key] = update_values
         with open(FileSystem.PIPERIDER_CONFIG_PATH, 'w+', encoding='utf-8') as f:
-            _yml.dump(config, f)
+            pyml.dump(config, f)
 
     @classmethod
-    def from_dbt_project(cls, dbt_project_path, dbt_profiles_dir=None):
+    def from_dbt_project(cls, dbt_project_path, dbt_profiles_dir=None, dbt_profile: str = None, dbt_target: str = None):
         """
         build configuration from the existing dbt project
 
+        :param dbt_target:
+        :param dbt_profile:
         :param dbt_project_path:
         :param dbt_profiles_dir:
         :return:
@@ -404,23 +405,23 @@ class Configuration(object):
         if not os.path.exists(os.path.expanduser(dbt_profile_path)):
             raise DbtProfileNotFoundError(dbt_profile_path)
 
-        dbt_profile = DbtUtil.load_dbt_profile(os.path.expanduser(dbt_profile_path))
+        profile = DbtUtil.load_dbt_profile(os.path.expanduser(dbt_profile_path))
 
         console = Console()
-        profile_name = dbt_project.get('profile', '')
-        profile_content = dbt_profile.get(profile_name, None)
+        profile_name = dbt_project.get('profile', '') if dbt_profile is None else dbt_profile
+        profile_content = profile.get(profile_name, None)
 
         if profile_content is None:
             console.print("[bold red]Error:[/bold red] "
-                          f"Could not find profile named '{profile_name}'")
+                          f"Could not find profile named \"{profile_name}\" in 'dbt_project.yml'.")
             sys.exit(1)
-        target_name = profile_content.get('target', 'default')
-        if target_name not in list(dbt_profile.get(profile_name, {}).get('outputs', {}).keys()):
+        target_name = profile_content.get('target', 'default') if dbt_target is None else dbt_target
+        if target_name not in list(profile.get(profile_name, {}).get('outputs', {}).keys()):
             console.print("[bold red]Error:[/bold red] "
                           f"The profile '{profile_name}' does not have a target named '{target_name}'.\n"
                           "Please check the dbt profile format.")
             sys.exit(1)
-        credential = DbtUtil.load_credential_from_dbt_profile(dbt_profile, profile_name, target_name)
+        credential = DbtUtil.load_credential_from_dbt_profile(profile, profile_name, target_name)
         type_name = credential.get('type')
         dbt = {
             'projectDir': os.path.relpath(os.path.dirname(dbt_project_path), FileSystem.WORKING_DIRECTORY),
@@ -428,6 +429,12 @@ class Configuration(object):
 
         if dbt_profiles_dir:
             dbt['profilesDir'] = dbt_profiles_dir
+
+        if dbt_profile:
+            dbt['profile'] = dbt_profile
+
+        if dbt_target:
+            dbt['target'] = dbt_target
 
         if type_name not in DATASOURCE_PROVIDERS:
             console.print(f"[[bold yellow]WARNING[/bold yellow]] Unsupported data source type '{type_name}' is found")
@@ -445,15 +452,18 @@ class Configuration(object):
         return cls(dataSources=[datasource])
 
     @classmethod
-    def instance(cls, piperider_config_path=None):
+    def instance(cls, piperider_config_path=None, dbt_profile: str = None, dbt_target: str = None, reload: bool = True):
         piperider_working_directory = cls.search_piperider_project_path()
         if piperider_working_directory:
             FileSystem.set_working_directory(piperider_working_directory)
         piperider_config_path = piperider_config_path or FileSystem.PIPERIDER_CONFIG_PATH
         global configuration_instance
-        if configuration_instance is not None:
-            return configuration_instance
-        configuration_instance = cls._load(piperider_config_path)
+        if configuration_instance:
+            dbt = configuration_instance.dbt
+            if reload is False or dbt is None or (
+                    dbt.get('profile') == dbt_profile and dbt.get('target') == dbt_target):
+                return configuration_instance
+        configuration_instance = cls._load(piperider_config_path, dbt_profile=dbt_profile, dbt_target=dbt_target)
         return configuration_instance
 
     @classmethod
@@ -470,7 +480,7 @@ class Configuration(object):
             None)
 
     @classmethod
-    def _load(cls, piperider_config_path=None):
+    def _load(cls, piperider_config_path=None, dbt_profile: str = None, dbt_target: str = None):
         """
         load from the existing configuration
 
@@ -509,8 +519,8 @@ class Configuration(object):
                 if '~' in profile_path:
                     profile_path = os.path.expanduser(profile_path)
                 profile = DbtUtil.load_dbt_profile(profile_path)
-                profile_name = dbt.get('profile')
-                target_name = dbt.get('target')
+                profile_name = dbt_profile if dbt_profile else dbt.get('profile')
+                target_name = dbt_target if dbt_target else dbt.get('target')
                 credential.update(DbtUtil.load_credential_from_dbt_profile(profile, profile_name, target_name))
                 # TODO: extract duplicate code from func 'from_dbt_project'
                 if credential.get('pass') and credential.get('password') is None:
@@ -519,7 +529,7 @@ class Configuration(object):
             else:
                 try:
                     with open(FileSystem.PIPERIDER_CREDENTIALS_PATH, 'r') as fd:
-                        credentials = yaml.safe_load(fd)
+                        credentials = pyml.safe_load(fd)
                         credential.update(credentials.get(ds.get('name'), {}))
                 except FileNotFoundError:
                     pass
@@ -533,7 +543,7 @@ class Configuration(object):
         if dbt:
             project_dir = config.get('dbt').get('projectDir')
             project = DbtUtil.load_dbt_project(project_dir)
-            profile_name = project.get('profile')
+            profile_name = dbt_profile if dbt_profile else dbt.get('profile', project.get('profile'))
 
             # Precedence reference
             # https://docs.getdbt.com/docs/get-started/connection-profiles#advanced-customizing-a-profile-directory
@@ -549,19 +559,26 @@ class Configuration(object):
             if profile.get(profile_name):
                 target_names = list(profile.get(profile_name).get('outputs').keys())
                 for target in target_names:
+                    dbt_config = copy.deepcopy(dbt)
                     credential = DbtUtil.load_credential_from_dbt_profile(profile, profile_name, target)
                     if credential.get('pass') and credential.get('password') is None:
                         credential['password'] = credential.pop('pass')
                     datasource_class = DATASOURCE_PROVIDERS[credential.get('type')]
+                    dbt_config.update(profile=profile_name, target=target)
                     data_source = datasource_class(
                         name=target,
-                        dbt=dict(**dbt, profile=profile_name, target=target),
+                        dbt=dict(dbt_config),
                         credential=credential
                     )
                     data_sources.append(data_source)
+
+                dbt['profile'] = profile_name
                 # dbt behavior: dbt uses 'default' as target name if no target given in profiles.yml
-                dbt['target'] = profile.get(profile_name).get('target', 'default')
-                if dbt['target'] not in target_names:
+                dbt['target'] = dbt_target if dbt_target else dbt.get('target',
+                                                                      profile.get(profile_name).get('target',
+                                                                                                    'default'))
+
+                if dbt.get('target') not in target_names:
                     console = Console()
                     console.print("[bold red]Error:[/bold red] "
                                   f"The profile '{profile_name}' does not have a target named '{dbt['target']}'.\n"
@@ -608,9 +625,9 @@ class Configuration(object):
                 # non-dbt project
                 if d.credential_source == 'config':
                     datasource.update(**d.credential)
-            return CommentedMap(datasource)
+            return pyml.CommentedMap(datasource)
 
-        flush_data_sources = CommentedSeq()
+        flush_data_sources = pyml.CommentedSeq()
 
         for ds in self.dataSources:
             exist_ds = _get_exist_datasource(ds, config)
@@ -626,7 +643,7 @@ class Configuration(object):
             config.yaml_set_comment_before_after_key('profiler', before='\n')
 
         with open(path, 'w', encoding='utf-8') as fd:
-            yaml.YAML().dump(config, fd)
+            pyml.dump(config, fd)
         pass
 
     def dump(self, path):
@@ -645,7 +662,7 @@ class Configuration(object):
         datasource = dict(name=d.name, type=d.type_name)
         if d.args.get('dbt'):
             # dbt project
-            config['dbt'] = CommentedMap(d.args.get('dbt'))
+            config['dbt'] = pyml.CommentedMap(d.args.get('dbt'))
         else:
             # non-dbt project
             if d.credential_source == 'config':
@@ -656,10 +673,10 @@ class Configuration(object):
         if self.cloud_config:
             config['cloud_config'] = self.cloud_config
 
-        config_yaml = CommentedMap(config)
+        config_yaml = pyml.CommentedMap(config)
 
         with open(path, 'w', encoding='utf-8') as fd:
-            yaml.YAML().dump(config_yaml, fd)
+            pyml.dump(config_yaml, fd)
 
     def dump_credentials(self, path, after_init_config=False):
         """
@@ -678,7 +695,7 @@ class Configuration(object):
 
         if creds:
             with open(path, 'w', encoding='utf-8') as fd:
-                yaml.round_trip_dump(creds, fd)
+                pyml.round_trip_dump(creds, fd)
 
     def to_sqlalchemy_config(self, datasource_name):
         # TODO we will convert a data source to a sqlalchemy parameters

@@ -10,9 +10,9 @@ import inquirer
 from jinja2 import UndefinedError
 from rich.console import Console
 from rich.table import Table
-from ruamel import yaml
 
 from piperider_cli import load_jinja_template, load_jinja_string_template
+from piperider_cli import yaml as pyml
 from piperider_cli.dbt.list_task import load_manifest, list_resources_unique_id_from_manifest, load_full_manifest
 from piperider_cli.error import \
     DbtProjectInvalidError, \
@@ -185,7 +185,9 @@ def get_dbt_state_candidate(dbt_state_dir: str, options: dict, *, select_for_met
     def profiling_chosen_fn(key, node):
         statistics = Statistics()
         if dbt_resources:
-            chosen = node.get('unique_id') in dbt_resources['models']
+            fqn = '.'.join(node.get('fqn'))
+            unique_id = node.get('unique_id')
+            chosen = unique_id in dbt_resources['models'] or fqn in dbt_resources['models']
             if not chosen:
                 statistics.add_field_one('filter')
             return chosen
@@ -468,20 +470,39 @@ def get_dbt_state_metrics_16(dbt_state_dir: str, dbt_tag: Optional[str] = None, 
             primary_entity = None
             metric_filter = []
             if metric.get('filter') is not None:
-                f = get_metric_filter(root_name, metric.get('filter'))
-                if f is not None:
-                    metric_filter.append(f)
+                # in dbt 1.7, there's an additional layer of 'where_filters'
+                if 'where_filters' in metric.get('filter'):
+                    for where_filter in metric.get('filter').get('where_filters', []):
+                        f = get_metric_filter(root_name, where_filter)
+                        if f is not None:
+                            metric_filter.append(f)
+                        else:
+                            statistics.add_field_one('nosupport')
+                            return None
                 else:
-                    statistics.add_field_one('nosupport')
-                    return None
+                    f = get_metric_filter(root_name, metric.get('filter'))
+                    if f is not None:
+                        metric_filter.append(f)
+                    else:
+                        statistics.add_field_one('nosupport')
+                        return None
 
             if filter is not None:
-                f = get_metric_filter(root_name, filter)
-                if f is not None:
-                    metric_filter.append(f)
+                if 'where_filters' in filter:
+                    for where_filter in filter.get('where_filters', []):
+                        f = get_metric_filter(root_name, where_filter)
+                        if f is not None:
+                            metric_filter.append(f)
+                        else:
+                            statistics.add_field_one('nosupport')
+                            return None
                 else:
-                    statistics.add_field_one('nosupport')
-                    return None
+                    f = get_metric_filter(root_name, filter)
+                    if f is not None:
+                        metric_filter.append(f)
+                    else:
+                        statistics.add_field_one('nosupport')
+                        return None
 
             nodes = metric.get('depends_on').get('nodes', [])
             depends_on = nodes[0]
@@ -689,9 +710,8 @@ def load_dbt_project(path: str):
 
     with open(path, 'r') as fd:
         try:
-            yml = yaml.YAML()
-            yml.allow_duplicate_keys = True
-            dbt_project = yml.load(fd)
+            loader = pyml.allow_duplicate_keys_loader()
+            dbt_project = loader(fd)
 
             content = {}
             for key, val in dbt_project.items():
@@ -710,9 +730,8 @@ def load_dbt_profile(path):
     template = load_jinja_template(path)
     profile = None
     try:
-        yml = yaml.YAML()
-        yml.allow_duplicate_keys = True
-        profile = yml.load(template.render())
+        loader = pyml.allow_duplicate_keys_loader()
+        profile = loader(template.render())
     except Exception as e:
         raise DbtProfileInvalidError(path, e)
     if profile is None:

@@ -1,11 +1,11 @@
 import json
 import os
-from typing import List
+from json import JSONDecodeError
+from typing import List, Union
 
 import requests
 from requests_toolbelt import MultipartEncoder, MultipartEncoderMonitor
 from rich.progress import Progress, TextColumn, BarColumn, DownloadColumn, TimeElapsedColumn
-from ruamel import yaml
 
 from piperider_cli import __version__
 from piperider_cli.configuration import Configuration
@@ -17,14 +17,17 @@ PIPERIDER_CLOUD_SERVICE = 'https://cloud.piperider.io/'
 SERVICE_ENV_API_KEY = 'PIPERIDER_API_TOKEN'
 SERVICE_ENV_SERVICE_KEY = 'PIPERIDER_API_SERVICE'
 
-yml = yaml.YAML()
-
 
 class PipeRiderProject(object):
     def __init__(self, project: dict):
         self.id = project.get('id')
         self.name = project.get('name')
         self.workspace_name = project.get('workspace_name')
+
+
+class PipeRiderTemporaryProject(PipeRiderProject):
+    def __init__(self):
+        super().__init__({'id': None, 'name': None, 'workspace_name': None})
 
 
 class CloudServiceHelper:
@@ -89,6 +92,11 @@ class CloudServiceHelper:
             return f'{self.api_service[:-1]}{uri_path}'
         return f'{self.api_service}{uri_path}'
 
+    def non_auth_header(self):
+        return {
+            'User-Agent': f'PipeRider CLI/{__version__}',
+        }
+
     def auth_headers(self):
         return {
             'User-Agent': f'PipeRider CLI/{__version__}',
@@ -124,6 +132,7 @@ class PipeRiderCloud:
         except BaseException:
             self.available = False
             self.me = None
+            self.config: dict = {}
 
     def update_config(self, options: dict):
         self.service.update_config(options)
@@ -273,8 +282,15 @@ class PipeRiderCloud:
 
     def upload_run(self, file_path, show_progress=True, project: PipeRiderProject = None):
         # TODO validate project name
-        if not self.available:
-            self.raise_error()
+        if isinstance(project, PipeRiderTemporaryProject):
+            api_url = self.service.url('/api/v2/temporary/runs/upload')
+            headers = self.service.non_auth_header()
+        else:
+            api_url = self.service.url(
+                f'/api/v2/workspaces/{project.workspace_name}/projects/{project.name}/runs/upload')
+            if not self.available:
+                self.raise_error()
+            headers = self.service.auth_headers()
 
         upload_progress = None
         task_id = None
@@ -288,10 +304,6 @@ class PipeRiderCloud:
                 fields={'file': ('run.json', file)},
             )
             m = MultipartEncoderMonitor(encoder, _upload_callback)
-
-            url = self.service.url(
-                f'/api/v2/workspaces/{project.workspace_name}/projects/{project.name}/runs/upload')
-            headers = self.service.auth_headers()
             headers['Content-Type'] = m.content_type
 
             if show_progress:
@@ -304,12 +316,17 @@ class PipeRiderCloud:
                 task_id = upload_progress.add_task(description=file_path, total=encoder.len)
                 upload_progress.start()
 
-            response = requests.post(url, data=m, headers=headers)
+            response = requests.post(api_url, data=m, headers=headers)
 
             if show_progress:
                 upload_progress.stop()
 
-            return response.json()
+            try:
+                response_data = response.json()
+            except JSONDecodeError:
+                response_data = {"success": False, "message": response.reason}
+
+            return response_data
 
     def share_run_report(self, workspace_name: str, project_name: str, run_id: int):
         if not self.available:
@@ -325,16 +342,21 @@ class PipeRiderCloud:
 
         return response.json()
 
-    def compare_reports(self, base_id: int, target_id: int, tables_from, project: PipeRiderProject,
+    def compare_reports(self, base_id: Union[int, str], target_id: Union[int, str], tables_from,
+                        project: PipeRiderProject,
                         metadata: dict = None):
-        if not self.available:
-            self.raise_error()
+        if isinstance(project, PipeRiderTemporaryProject):
+            api_url = self.service.url(f'/api/v2/temporary/runs/{base_id}/compare/{target_id}')
+            headers = self.service.non_auth_header()
+        else:
+            if not self.available:
+                self.raise_error()
+            api_url = self.service.url(
+                f'/api/v2/workspaces/{project.workspace_name}/projects/{project.name}/runs/{base_id}/compare/{target_id}')
+            headers = self.service.auth_headers()
 
-        url = self.service.url(
-            f'/api/v2/workspaces/{project.workspace_name}/projects/{project.name}/runs/{base_id}/compare/{target_id}')
-        headers = self.service.auth_headers()
         data = json.dumps({'tables_from': tables_from, 'metadata': metadata})
-        response = requests.post(url, data=data, headers=headers)
+        response = requests.post(api_url, data=data, headers=headers)
 
         if response.status_code != 200:
             self.raise_error(response.reason)

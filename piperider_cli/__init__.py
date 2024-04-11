@@ -9,7 +9,7 @@ from datetime import datetime
 
 from dateutil import tz
 from rich.console import Console
-from ruamel import yaml
+from piperider_cli import yaml as pyml
 
 PIPERIDER_USER_HOME = os.path.expanduser('~/.piperider')
 if os.access(os.path.expanduser('~/'), os.W_OK) is False:
@@ -79,7 +79,7 @@ def get_sentry_dns():
 
 def get_user_id():
     with open(PIPERIDER_USER_PROFILE, 'r') as f:
-        user_profile = yaml.YAML().load(f)
+        user_profile = pyml.load(f)
         return user_profile.get('user_id')
 
 
@@ -159,28 +159,6 @@ def raise_exception_when_directory_not_writable(output):
             raise Exception(f'The path "{output}" is not writable')
 
 
-def safe_load_yaml(file_path):
-    try:
-        with open(file_path, 'r') as f:
-            payload = yaml.safe_load(f)
-    except yaml.YAMLError as e:
-        print(e)
-        return None
-    except FileNotFoundError:
-        return None
-    return payload
-
-
-def round_trip_load_yaml(file_path):
-    with open(file_path, 'r') as f:
-        try:
-            payload = yaml.round_trip_load(f)
-        except yaml.YAMLError as e:
-            print(e)
-            return None
-    return payload
-
-
 def load_json(file_path):
     with open(file_path, 'r') as f:
         try:
@@ -205,9 +183,23 @@ def _init_jinja_env(env):
     def as_number(var):
         if var is None:
             return var
-        if var.isnumeric():
-            return int(var)
-        return float(var)
+
+        # the input has been a numeric value
+        if isinstance(var, int) or isinstance(var, float):
+            return var
+
+        # the input is str, but could convert to a numeric value
+        try:
+            if isinstance(var, str):
+                if var.isnumeric():
+                    return int(var)
+                else:
+                    return float(var)
+        except BaseException:
+            # fail to covert
+            raise
+        # unknown cases
+        return var
 
     def as_text(var):
         if var is None:
@@ -250,7 +242,7 @@ def open_report_in_browser(report_path='', is_cloud_path=False):
     protocol_prefix = "" if is_cloud_path else "file://"
     try:
         webbrowser.open(f"{protocol_prefix}{report_path}")
-    except yaml.YAMLError as e:
+    except pyml.YAMLError as e:
         print(e)
         return None
 
