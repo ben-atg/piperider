@@ -611,9 +611,9 @@ class Runner:
                 profiler.collect_metadata(dbt_metadata_subjects, subjects)
 
                 event_payload.step = 'profile'
-                console.rule('Profile statistics')
-                profiler_result = profiler.profile(subjects, metadata_subjects=dbt_metadata_subjects)
-                run_result.update(profiler_result)
+                # console.rule('Profile statistics')
+                # profiler_result = profiler.profile(subjects, metadata_subjects=dbt_metadata_subjects)
+                # run_result.update(profiler_result)
             except NoSuchTableError as e:
                 console.print(f"[bold red]Error:[/bold red] No such table '{str(e)}'")
                 return 1
@@ -623,29 +623,29 @@ class Runner:
         statistics.reset()
 
         # Query metrics
-        event_payload.step = 'metric'
-        if skip_datasource_connection is False:
-            console.rule('Query metrics')
-            metrics = []
-            if dbt_config:
-                metrics = dbtutil.get_dbt_state_metrics_16(dbt_target_path, dbt_config.get('tag'), dbt_resources)
-            statistics.display_statistic('query', 'metric')
-            if metrics:
-                run_result['metrics'] = MetricEngine(
-                    ds,
-                    metrics,
-                    RichMetricEventHandler([m.label for m in metrics])
-                ).execute()
+        # event_payload.step = 'metric'
+        # if skip_datasource_connection is False:
+        #     console.rule('Query metrics')
+        #     metrics = []
+        #     if dbt_config:
+        #         metrics = dbtutil.get_dbt_state_metrics_16(dbt_target_path, dbt_config.get('tag'), dbt_resources)
+        #     statistics.display_statistic('query', 'metric')
+        #     if metrics:
+        #         run_result['metrics'] = MetricEngine(
+        #             ds,
+        #             metrics,
+        #             RichMetricEventHandler([m.label for m in metrics])
+        #         ).execute()
 
         # TODO: refactor input unused arguments
-
-        # DBT Test
-        event_payload.step = 'dbt test'
-        run_result['tests'] = []
-        if dbt_test_results:
-            console.rule('DBT Test Results')
-            _show_dbt_test_result(dbt_test_results)
-            run_result['tests'].extend(dbt_test_results)
+        #
+        # # DBT Test
+        # event_payload.step = 'dbt test'
+        # run_result['tests'] = []
+        # if dbt_test_results:
+        #     console.rule('DBT Test Results')
+        #     _show_dbt_test_result(dbt_test_results)
+        #     run_result['tests'].extend(dbt_test_results)
 
         if not table:
             if dbt_config:
@@ -668,11 +668,11 @@ class Runner:
                 if dbt_run_results:
                     run_result['dbt']['run_results'] = dbt_run_results
 
-        for t in run_result['tables']:
-            _clean_up_profile_null_properties(run_result['tables'][t])
+        # for t in run_result['tables']:
+        #     _clean_up_profile_null_properties(run_result['tables'][t])
 
-        if dbt_config:
-            dbtutil.append_descriptions(run_result, dbt_target_path)
+        # if dbt_config:
+        #     dbtutil.append_descriptions(run_result, dbt_target_path)
 
         # Generate report
         event_payload.step = 'report'
@@ -708,9 +708,9 @@ class Runner:
         if skip_report:
             console.print(f'Results saved to {output if output else output_path}')
 
-        _analyse_run_event(event_payload, run_result, dbt_test_results)
+        # _analyse_run_event(event_payload, run_result, dbt_test_results)
 
-        if len(subjects) == 0 and len(run_result.get('metrics', [])) == 0 and not skip_datasource_connection:
-            return EC_WARN_NO_PROFILED_MODULES
+        # if len(subjects) == 0 and len(run_result.get('metrics', [])) == 0 and not skip_datasource_connection:
+        #     return EC_WARN_NO_PROFILED_MODULES
 
         return 0
